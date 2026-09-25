@@ -926,9 +926,7 @@ func (r *Repository) ReleaseTaskCheckoutForRun(ctx context.Context, taskID, agen
 // (an event-subscriber path that crashes before publishing, a run that
 // never reaches a terminal event at all) — releaseTaskCheckoutForRun
 // (internal/office/service) is the primary release path; this only cleans
-// up what that missed. Returns the number of tasks reaped. json_extract is
-// SQLite-flavoured — see CancelRunsForTasks in tree_holds.go for why
-// that's acceptable here.
+// up what that missed. Returns the number of tasks reaped.
 //
 // The in-flight check is scoped to the checkout holder's own runs, not any
 // run on the task: a queued run can belong to a different agent that is
@@ -940,8 +938,13 @@ func (r *Repository) ReleaseTaskCheckoutForRun(ctx context.Context, taskID, agen
 // before reapStaleCheckouts in the same tick and flips a live agent's own
 // claimed run to queued at 30 minutes, so dropping 'queued' would reap a
 // still-executing holder.
+//
+// A run's task id lives in runs.payload, not a column, so both comparisons
+// read it through dialect.JSONExtract. Precedent: HasInFlightRunForTask in
+// runs_inflight.go.
 func (r *Repository) ReapStaleCheckouts(ctx context.Context, olderThan time.Time) (int64, error) {
-	result, err := r.db.ExecContext(ctx, r.db.Rebind(`
+	taskIDExpr := dialect.JSONExtract(r.ro.DriverName(), "w.payload", "task_id")
+	query := `
 		UPDATE tasks SET checkout_agent_id = NULL, checkout_at = NULL, checkout_run_id = NULL
 		WHERE checkout_agent_id IS NOT NULL
 		  AND checkout_agent_id != ''
@@ -953,13 +956,14 @@ func (r *Repository) ReapStaleCheckouts(ctx context.Context, olderThan time.Time
 					(tasks.checkout_run_id IS NOT NULL AND tasks.checkout_run_id != ''
 					 AND w.id = tasks.checkout_run_id)
 					OR (COALESCE(tasks.checkout_run_id, '') = ''
-					 AND json_extract(w.payload, '$.task_id') = tasks.id)
+					 AND ` + taskIDExpr + ` = tasks.id)
 				  )
 				AND w.agent_profile_id = tasks.checkout_agent_id
-				AND json_extract(w.payload, '$.task_id') = tasks.id
+				AND ` + taskIDExpr + ` = tasks.id
 				AND w.status IN ('queued', 'claimed')
 		  )
-	`), olderThan)
+	`
+	result, err := r.db.ExecContext(ctx, r.db.Rebind(query), olderThan)
 	if err != nil {
 		return 0, err
 	}
