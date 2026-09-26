@@ -38,13 +38,23 @@ func TestPostgresReapStaleCheckouts(t *testing.T) {
 
 	// The reaped row's checkout_run_id points at a run that no longer exists,
 	// so the run-id arm of the in-flight check cannot suppress the reap.
-	execPostgres(t, ctx, repo, `
-		UPDATE tasks SET checkout_agent_id = ?, checkout_run_id = 'run-pg-finished', checkout_at = ?
-		WHERE id = ?
-	`, staleAgent, checkoutAt, staleID)
-	execPostgres(t, ctx, repo, `
-		UPDATE tasks SET checkout_agent_id = ?, checkout_at = ? WHERE id = ?
-	`, liveAgent, checkoutAt, liveID)
+	acquired, err := repo.CheckoutTaskForRun(ctx, staleID, staleAgent, "run-pg-finished")
+	if err != nil {
+		t.Fatalf("checkout stale task: %v", err)
+	}
+	if !acquired {
+		t.Fatal("expected stale task checkout to succeed")
+	}
+	execPostgres(t, ctx, repo, `UPDATE tasks SET checkout_at = ? WHERE id = ?`, checkoutAt, staleID)
+
+	acquired, err = repo.CheckoutTaskForRun(ctx, liveID, liveAgent, "")
+	if err != nil {
+		t.Fatalf("checkout live task: %v", err)
+	}
+	if !acquired {
+		t.Fatal("expected live task checkout to succeed")
+	}
+	execPostgres(t, ctx, repo, `UPDATE tasks SET checkout_at = ? WHERE id = ?`, checkoutAt, liveID)
 	execPostgres(t, ctx, repo, `
 		INSERT INTO runs (id, agent_profile_id, reason, payload, status, requested_at)
 		VALUES ('run-pg-live', ?, 'task_assigned', ?, 'claimed', ?)

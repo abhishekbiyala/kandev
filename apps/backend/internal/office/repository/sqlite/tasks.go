@@ -842,8 +842,9 @@ func (r *Repository) GetCheckoutAgentBySession(ctx context.Context, sessionID st
 // exact run that owns it. This compatibility method keeps older callers and
 // migrated rows working without erasing a run-scoped lock.
 func (r *Repository) CheckoutTask(ctx context.Context, taskID, agentID string) (bool, error) {
+	now := dialect.Now(r.ro.DriverName())
 	result, err := r.db.ExecContext(ctx, r.db.Rebind(`
-		UPDATE tasks SET checkout_agent_id = ?, checkout_at = datetime('now'), checkout_run_id = NULL
+		UPDATE tasks SET checkout_agent_id = ?, checkout_at = `+now+`, checkout_run_id = NULL
 		WHERE id = ? AND (
 			checkout_agent_id IS NULL OR checkout_agent_id = '' OR
 			(checkout_agent_id = ? AND (checkout_run_id IS NULL OR checkout_run_id = ''))
@@ -866,8 +867,9 @@ func (r *Repository) CheckoutTaskForRun(ctx context.Context, taskID, agentID, ru
 	if runID == "" {
 		return r.CheckoutTask(ctx, taskID, agentID)
 	}
+	now := dialect.Now(r.ro.DriverName())
 	result, err := r.db.ExecContext(ctx, r.db.Rebind(`
-		UPDATE tasks SET checkout_agent_id = ?, checkout_at = datetime('now'), checkout_run_id = ?
+		UPDATE tasks SET checkout_agent_id = ?, checkout_at = `+now+`, checkout_run_id = ?
 		WHERE id = ? AND (
 			checkout_agent_id IS NULL OR checkout_agent_id = '' OR
 			(checkout_agent_id = ? AND (checkout_run_id IS NULL OR checkout_run_id = '' OR checkout_run_id = ?))
@@ -919,29 +921,9 @@ func (r *Repository) ReleaseTaskCheckoutForRun(ctx context.Context, taskID, agen
 	return err
 }
 
-// ReapStaleCheckouts clears checkout_agent_id/checkout_at/checkout_run_id on tasks whose
-// checkout is older than olderThan and that have no queued or claimed run
-// *belonging to the checkout holder* in flight. This is a backstop for
-// callers that fail to release the checkout on a terminal run transition
-// (an event-subscriber path that crashes before publishing, a run that
-// never reaches a terminal event at all) — releaseTaskCheckoutForRun
-// (internal/office/service) is the primary release path; this only cleans
-// up what that missed. Returns the number of tasks reaped.
-//
-// The in-flight check is scoped to the checkout holder's own runs, not any
-// run on the task: a queued run can belong to a different agent that is
-// waiting precisely because this checkout is leaked (see
-// requeueContendedCheckout in scheduler_integration.go, which re-queues a
-// run that lost the checkout race) — task-scoping would let that waiting
-// run permanently suppress the reap it depends on. 'queued' stays in the
-// status list even holder-scoped: recoverStaleClaimedRuns runs immediately
-// before reapStaleCheckouts in the same tick and flips a live agent's own
-// claimed run to queued at 30 minutes, so dropping 'queued' would reap a
-// still-executing holder.
-//
-// A run's task id lives in runs.payload, not a column, so both comparisons
-// read it through dialect.JSONExtract. Precedent: HasInFlightRunForTask in
-// runs_inflight.go.
+// ReapStaleCheckouts clears old task checkouts when no queued or claimed run
+// still belongs to the checkout holder. The predicate matches the holder,
+// task ID in the run payload, and checkout_run_id when the row has one.
 func (r *Repository) ReapStaleCheckouts(ctx context.Context, olderThan time.Time) (int64, error) {
 	taskIDExpr := dialect.JSONExtract(r.ro.DriverName(), "w.payload", "task_id")
 	query := `
