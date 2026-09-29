@@ -431,6 +431,7 @@ func newPluginExecutorTestServer(t *testing.T, handler http.Handler) (*httptest.
 	certificate := tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
 	server := httptest.NewUnstartedServer(handler)
 	server.TLS = &tls.Config{Certificates: []tls.Certificate{certificate}}
+	server.EnableHTTP2 = true
 	server.StartTLS()
 	t.Cleanup(server.Close)
 

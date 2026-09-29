@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -216,6 +217,9 @@ func TestPluginExecutorRestartRecovery(t *testing.T) {
 	if len(operations.inspectRequests) != 2 || store.checkpoints < 3 {
 		t.Fatalf("inspect count=%d checkpoints=%d", len(operations.inspectRequests), store.checkpoints)
 	}
+	if want := []int{testPluginExecutorInstancePort}; !slices.Equal(operations.connectionPorts, want) {
+		t.Fatalf("recovery leased runtime ports = %v, want the recorded instance port %v", operations.connectionPorts, want)
+	}
 	if store.record.ResumeToken != "resume-preserved" || store.record.LastMessageUUID != "message-preserved" {
 		t.Fatalf("recovery changed conversation state: %+v", store.record)
 	}
@@ -396,6 +400,8 @@ func TestPluginExecutorResetCleanupUsesTaskClaim(t *testing.T) {
 	}
 }
 
+const testPluginExecutorInstancePort = 41234
+
 func pluginExecutorRecoveryRecord(t *testing.T, phase string, resource *pluginsdk.ExecutorResourceDescriptor) *models.ExecutorRunning {
 	t.Helper()
 	inventory := pluginExecutorInventory{
@@ -404,7 +410,7 @@ func pluginExecutorRecoveryRecord(t *testing.T, phase string, resource *pluginsd
 		EnvironmentID: "environment-plugin-recovery", ProfileID: "profile-plugin-recovery",
 		ProfileConfig: map[string]string{"region": "eu-west-1"}, SecretReferences: map[string]string{"credential": "vault-ref-2"},
 		OperationID: "operation-plugin-recovery", InputDigest: "digest-plugin-recovery", Phase: phase,
-		Resource: resource, EnvironmentGeneration: 7,
+		Resource: resource, InstancePort: testPluginExecutorInstancePort, EnvironmentGeneration: 7,
 	}
 	data, err := json.Marshal(inventory)
 	if err != nil {

@@ -6,10 +6,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	agentctl "github.com/kandev/kandev/internal/agent/runtime/agentctl"
 	"github.com/kandev/kandev/internal/agentruntime"
@@ -34,6 +40,7 @@ type pluginExecutorOperationsFake struct {
 	inspectErr         error
 	connectionResponse *pluginsdk.ResolveExecutorConnectionResponse
 	connectionErr      error
+	connectionPorts    []int
 	destroyRequest     *pluginsdk.DestroyExecutorEnvironmentRequest
 	destroyResponse    *pluginsdk.DestroyExecutorEnvironmentResponse
 	destroyErr         error
@@ -67,7 +74,8 @@ func (f *pluginExecutorOperationsFake) InspectExecutorEnvironment(_ context.Cont
 	return nil, errors.New("unexpected inspect")
 }
 
-func (f *pluginExecutorOperationsFake) ResolveExecutorConnection(_ context.Context, _ *pluginsdk.ResolveExecutorConnectionRequest) (*pluginsdk.ResolveExecutorConnectionResponse, error) {
+func (f *pluginExecutorOperationsFake) ResolveExecutorConnection(_ context.Context, req *pluginsdk.ResolveExecutorConnectionRequest) (*pluginsdk.ResolveExecutorConnectionResponse, error) {
+	f.connectionPorts = append(f.connectionPorts, int(req.GetRuntimePort()))
 	return f.connectionResponse, f.connectionErr
 }
 
@@ -84,15 +92,28 @@ func TestPluginExecutorLaunch(t *testing.T) {
 			Capabilities: &pluginsdk.ExecutorProviderCapabilities{Terminal: true, Files: true, Git: true},
 		}},
 		connectionResponse: &pluginsdk.ResolveExecutorConnectionResponse{Lease: &pluginsdk.ExecutorConnectionLease{
-			BaseUrl: "https://executor.example", ExpiresAt: "2026-09-26T14:00:00Z", Generation: "generation-1",
+			BaseUrl: "https://executor.example", ExpiresAt: time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano), Generation: "generation-1",
 		}},
 	}
 	runtime := NewPluginRemoteExecutor(operations, newTestLogger())
-	runtime.newAgentctlClient = func(ctx context.Context, resolver agentctl.ConnectionLeaseResolver, log *logger.Logger, executionID, _ string) (*agentctl.Client, string, error) {
+	const instancePort = testPluginExecutorInstancePort
+	var instanceRequest agentctl.CreateInstanceRequest
+	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/instances" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewDecoder(r.Body).Decode(&instanceRequest)
+		_ = json.NewEncoder(w).Encode(agentctl.CreateInstanceResponse{ID: instanceRequest.ID, Port: instancePort})
+	}))
+	defer control.Close()
+	controlURL, _ := url.Parse(control.URL)
+	controlPort, _ := strconv.Atoi(controlURL.Port())
+	runtime.newAgentctlControlClient = func(ctx context.Context, resolver agentctl.ConnectionLeaseResolver, log *logger.Logger, _ string) (*agentctl.ControlClient, string, error) {
 		if _, err := resolver(ctx); err != nil {
 			return nil, "", err
 		}
-		return agentctl.NewClient("unused", 0, log, agentctl.WithExecutionID(executionID)), "agentctl-token", nil
+		return agentctl.NewControlClient(controlURL.Hostname(), controlPort, log), "agentctl-token", nil
 	}
 	runtime.ready = func(context.Context, *agentctl.Client) error { return nil }
 
@@ -116,6 +137,15 @@ func TestPluginExecutorLaunch(t *testing.T) {
 	if got := operations.provisionRequest.GetProfile().GetSecretValues()["credential"]; got != "launch-secret" {
 		t.Fatalf("transient secret value = %q", got)
 	}
+	if instanceRequest.ID != request.InstanceID || instanceRequest.SessionID != request.SessionID || instanceRequest.WorkspacePath != pluginExecutorWorkspacePath {
+		t.Fatalf("instance request = %#v", instanceRequest)
+	}
+	if want := []int{pluginExecutorRuntimePort, instancePort}; !slices.Equal(operations.connectionPorts, want) {
+		t.Fatalf("leased runtime ports = %v, want control then instance port %v", operations.connectionPorts, want)
+	}
+	if ready, ok := checkpoints[len(checkpoints)-1][MetadataKeyPluginExecutor].(pluginExecutorInventory); !ok || ready.InstancePort != instancePort {
+		t.Fatalf("ready checkpoint = %#v, want instance port %d", checkpoints[len(checkpoints)-1], instancePort)
+	}
 	if len(checkpoints) != 3 {
 		t.Fatalf("checkpoint count = %d, want allocating, provisioned, and ready", len(checkpoints))
 	}
@@ -136,7 +166,7 @@ func TestPluginExecutorPartialLaunch(t *testing.T) {
 	}
 	runtime := NewPluginRemoteExecutor(operations, newTestLogger())
 	runtime.SetRecoveryDependencies(nil, &pluginExecutorInventoryStoreFake{})
-	runtime.newAgentctlClient = func(context.Context, agentctl.ConnectionLeaseResolver, *logger.Logger, string, string) (*agentctl.Client, string, error) {
+	runtime.newAgentctlControlClient = func(context.Context, agentctl.ConnectionLeaseResolver, *logger.Logger, string) (*agentctl.ControlClient, string, error) {
 		return nil, "", errors.New("unexpected agentctl client construction")
 	}
 	request := pluginExecutorLaunchRequest(testPluginExecutorLaunchProvider())
