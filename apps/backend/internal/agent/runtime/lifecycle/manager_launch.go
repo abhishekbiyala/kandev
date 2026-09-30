@@ -1309,18 +1309,9 @@ func (m *Manager) launchBuildExecutorRequest(ctx context.Context, executionID st
 		ProviderGatewayAuth:            providerGatewayAuth,
 	}
 	if reqWithWorktree.ExecutorType == string(models.ExecutorTypePluginRemote) {
-		if m.pluginExecutorProfileLoader == nil {
-			return nil, nil, nil, errors.New("plugin executor profile loader is unavailable")
+		if err := m.preparePluginExecutorLaunch(ctx, execReq, metadata, reqWithWorktree.TaskEnvironmentID); err != nil {
+			return nil, nil, nil, err
 		}
-		profileID := strings.TrimSpace(getMetadataString(metadata, MetadataKeyExecutorProfileID))
-		profile, loadErr := m.pluginExecutorProfileLoader.ExecutorProviderProfileForLaunch(ctx, profileID, reqWithWorktree.TaskEnvironmentID)
-		if loadErr != nil {
-			return nil, nil, nil, fmt.Errorf("resolve plugin executor profile: %w", loadErr)
-		}
-		if profile == nil {
-			return nil, nil, nil, errors.New("plugin executor profile is unavailable")
-		}
-		execReq.PluginExecutor = &PluginExecutorLaunch{Profile: *profile}
 	}
 	m.wireKubernetesInventoryPersistence(execReq, reqWithWorktree.ExecutorType)
 	m.wirePluginExecutorInventoryPersistence(execReq, reqWithWorktree.ExecutorType)

@@ -176,6 +176,7 @@ func (r *PluginRemoteExecutor) CreateInstance(ctx context.Context, req *Executor
 	if err != nil {
 		return nil, err
 	}
+	r.uploadPluginExecutorAgentCredentials(ctx, client, launch.request)
 	return r.finishPluginExecutorLaunch(ctx, launch, resource, client, token)
 }
 
