@@ -146,6 +146,9 @@ const (
 	StopReasonCascadeDelete    = "cascade delete"
 	StopReasonTaskTreeArchived = "task tree archived"
 	StopReasonTaskTreeDeleted  = "task tree deleted"
+	// StopReasonLaunchRollback discards an instance whose launch failed. Its
+	// runtime inventory is released afterwards, so the environment must go too.
+	StopReasonLaunchRollback = "launch rollback"
 )
 
 func shouldRunExecutorCleanup(reason string) bool {

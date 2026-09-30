@@ -402,7 +402,7 @@ func (r *PluginRemoteExecutor) StopInstance(ctx context.Context, instance *Execu
 		stopErr = instance.Client.Stop(ctx)
 		instance.Client.Close()
 	}
-	if shouldRunExecutorCleanup(instance.StopReason) {
+	if shouldRunExecutorCleanup(instance.StopReason) || instance.StopReason == StopReasonLaunchRollback {
 		if err := r.cleanupPluginExecutorInstance(ctx, instance); err != nil {
 			return errors.Join(stopErr, err)
 		}

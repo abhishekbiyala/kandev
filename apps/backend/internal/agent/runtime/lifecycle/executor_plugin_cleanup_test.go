@@ -94,6 +94,34 @@ func TestPluginExecutorStopMatrix(t *testing.T) {
 	}
 }
 
+func TestPluginExecutorLaunchRollbackDestroysTheEnvironment(t *testing.T) {
+	operations := &pluginExecutorOperationsFake{destroyResponse: &pluginsdk.DestroyExecutorEnvironmentResponse{ConfirmedAbsent: true}}
+	loader := &pluginExecutorRecoveryProfileLoaderFake{profile: models.ExecutorProviderLaunchProfile{
+		Provider: testPluginExecutorLaunchProvider(), ProfileID: "profile-plugin-recovery",
+	}}
+	store := &pluginExecutorInventoryStoreFake{record: pluginExecutorRecoveryRecord(t, "ready", &pluginsdk.ExecutorResourceDescriptor{
+		ResourceHandle: "resource-rollback", StateJson: `{"resource":"one"}`, Platform: "linux-amd64", StateVersion: 1,
+	}), session: &models.TaskSession{ID: "session-plugin-recovery", TaskID: "task-plugin-recovery", State: models.TaskSessionStateStarting}}
+	runtime := NewPluginRemoteExecutor(operations, newTestLogger())
+	runtime.SetRecoveryDependencies(loader, store)
+	var released bool
+	instance := &ExecutorInstance{
+		InstanceID: "execution-plugin-recovery", TaskID: "task-plugin-recovery", SessionID: "session-plugin-recovery",
+		Metadata:                store.record.Metadata,
+		ReleaseRuntimeInventory: func(context.Context) error { released = true; return nil },
+	}
+
+	if err := stopRuntimeInstanceAndRelease(context.Background(), runtime, instance, true); err != nil {
+		t.Fatalf("stopRuntimeInstanceAndRelease: %v", err)
+	}
+	if operations.destroyRequest.GetResource().GetResourceHandle() != "resource-rollback" {
+		t.Fatalf("destroy request = %#v; a failed launch must not leave its environment running", operations.destroyRequest)
+	}
+	if !released {
+		t.Fatal("runtime inventory was not released after the environment was destroyed")
+	}
+}
+
 func TestPluginExecutorOwnershipFence(t *testing.T) {
 	operations := &pluginExecutorOperationsFake{destroyResponse: &pluginsdk.DestroyExecutorEnvironmentResponse{ConfirmedAbsent: true}}
 	loader := &pluginExecutorRecoveryProfileLoaderFake{profile: models.ExecutorProviderLaunchProfile{
