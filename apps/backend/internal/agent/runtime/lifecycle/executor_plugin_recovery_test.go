@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -222,6 +223,50 @@ func TestPluginExecutorRestartRecovery(t *testing.T) {
 	}
 	if store.record.ResumeToken != "resume-preserved" || store.record.LastMessageUUID != "message-preserved" {
 		t.Fatalf("recovery changed conversation state: %+v", store.record)
+	}
+}
+
+func TestPluginExecutorRecoveredClientRequiresRecordedInstancePort(t *testing.T) {
+	resource := &pluginsdk.ExecutorResourceDescriptor{ResourceHandle: "resource-recovery"}
+	record := pluginExecutorRecoveryRecord(t, pluginExecutorPhaseReady, resource)
+	inventory, err := decodePluginExecutorInventory(record.Metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inventory.InstancePort = 0
+	var clientFactoryCalled bool
+	operations := &pluginExecutorOperationsFake{}
+	runtime := NewPluginRemoteExecutor(operations, newTestLogger())
+	runtime.newRecoveredAgentctlClient = func(context.Context, agentctl.ConnectionLeaseResolver, *logger.Logger, string, string) (*agentctl.Client, error) {
+		clientFactoryCalled = true
+		return nil, errors.New("unexpected client creation")
+	}
+	state := &pluginExecutorRecoveryState{
+		inventory:        inventory,
+		operationContext: &pluginsdk.ExecutorProviderRequestContext{},
+		resource:         resource,
+	}
+
+	_, err = runtime.newRecoveredPluginExecutorInstance(context.Background(), record, state)
+	if err == nil || !strings.Contains(err.Error(), "no agentctl instance port") {
+		t.Fatalf("newRecoveredPluginExecutorInstance() error = %v, want missing port", err)
+	}
+	if clientFactoryCalled || len(operations.connectionPorts) != 0 {
+		t.Fatalf("missing port reached connection setup: factory=%v ports=%v", clientFactoryCalled, operations.connectionPorts)
+	}
+}
+
+func TestPluginExecutorRetainedAttachmentRequiresRecordedInstancePort(t *testing.T) {
+	inventory := pluginExecutorRecoveryRecord(t, pluginExecutorPhaseReady, &pluginsdk.ExecutorResourceDescriptor{
+		ResourceHandle: "resource-recovery",
+	})
+	recovered, err := decodePluginExecutorInventory(inventory.Metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovered.InstancePort = 0
+	if pluginExecutorInventoryRetainedAttachable(recovered, recovered.EnvironmentID) {
+		t.Fatal("retained inventory without an instance port was attachable")
 	}
 }
 

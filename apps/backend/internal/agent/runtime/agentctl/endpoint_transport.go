@@ -69,7 +69,18 @@ func newEndpointClient(ctx context.Context, resolver ConnectionLeaseResolver, lo
 // NewEndpointControlClient creates a control client that reaches agentctl's
 // control server through provider-issued connection leases.
 func NewEndpointControlClient(ctx context.Context, resolver ConnectionLeaseResolver, log *logger.Logger, opts ...ControlClientOption) (*ControlClient, error) {
-	manager, initial, err := resolveInitialEndpoint(ctx, resolver, nil)
+	return newEndpointControlClient(ctx, resolver, log, endpointTransportDependencies{}, nil, opts...)
+}
+
+func newEndpointControlClient(
+	ctx context.Context,
+	resolver ConnectionLeaseResolver,
+	log *logger.Logger,
+	dependencies endpointTransportDependencies,
+	now func() time.Time,
+	opts ...ControlClientOption,
+) (*ControlClient, error) {
+	manager, initial, err := resolveInitialEndpoint(ctx, resolver, now)
 	if err != nil {
 		return nil, err
 	}
@@ -80,7 +91,7 @@ func NewEndpointControlClient(ctx context.Context, resolver ConnectionLeaseResol
 	for _, opt := range opts {
 		opt(client)
 	}
-	transport := newLeasedRoundTripper(manager, initial, client.authToken, "", endpointTransportDependencies{})
+	transport := newLeasedRoundTripper(manager, initial, client.authToken, "", dependencies)
 	client.applyToken = transport.setAuthToken
 	client.httpClient = &http.Client{Timeout: 30 * time.Second, Transport: transport, CheckRedirect: endpointRedirectPolicy}
 	return client, nil

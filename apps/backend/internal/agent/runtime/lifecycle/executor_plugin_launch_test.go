@@ -22,6 +22,9 @@ import (
 	"github.com/kandev/kandev/internal/common/logger"
 	"github.com/kandev/kandev/internal/task/models"
 	"github.com/kandev/kandev/pkg/pluginsdk"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 type pluginExecutorOperationsFake struct {
@@ -190,6 +193,88 @@ func TestPluginExecutorPartialLaunch(t *testing.T) {
 	}
 	if !containsString(strings.Join(phases, ","), "absent") {
 		t.Fatalf("checkpoint phases = %v, want final absent", phases)
+	}
+}
+
+func TestPluginExecutorLaunchFailureLogsSanitizedCause(t *testing.T) {
+	provider := testPluginExecutorLaunchProvider()
+	operations := &pluginExecutorOperationsFake{
+		destroyResponse: &pluginsdk.DestroyExecutorEnvironmentResponse{ConfirmedAbsent: true},
+	}
+	core, observed := observer.New(zapcore.WarnLevel)
+	log, err := logger.NewFromZap(zap.New(core))
+	if err != nil {
+		t.Fatalf("NewFromZap(): %v", err)
+	}
+	store := &pluginExecutorInventoryStoreFake{}
+	runtime := NewPluginRemoteExecutor(operations, log)
+	runtime.SetRecoveryDependencies(nil, store)
+	request := pluginExecutorLaunchRequest(provider)
+	request.CheckpointRuntimeInventory = func(context.Context, map[string]interface{}) error { return nil }
+	request.ReleaseRuntimeInventory = func(context.Context) error { return nil }
+	profile := request.PluginExecutor.Profile
+	inventory := pluginExecutorLaunchInventory(request, profile, request.InstanceID, "digest")
+	cause := errors.New("control server rejected Authorization: Bearer ghp_abcdefghijklmnopqrstuvwxyz1234567890AB")
+	resource := &pluginsdk.ExecutorResourceDescriptor{ResourceHandle: "resource-1"}
+	operationContext := pluginExecutorRequestContext(context.Background(), request, profile, request.InstanceID, "digest")
+
+	_ = runtime.cleanupAfterPluginExecutorFailure(context.Background(), request, operationContext, inventory, resource, "control_handshake", cause)
+
+	entries := observed.FilterMessage("plugin executor launch gate failed").All()
+	if len(entries) != 1 {
+		t.Fatalf("launch gate log count = %d, want 1", len(entries))
+	}
+	fields := entries[0].ContextMap()
+	logged := fmt.Sprint(fields)
+	if strings.Contains(logged, "ghp_abcdefghijklmnopqrstuvwxyz") {
+		t.Fatalf("launch gate log exposed provider credential: %s", logged)
+	}
+	if got := fields["cause_type"]; got != "*errors.errorString" {
+		t.Fatalf("launch gate cause_type = %v, want a bounded error type", got)
+	}
+}
+
+func TestPluginExecutorConnectionResolverPreservesProviderRejection(t *testing.T) {
+	operations := &pluginExecutorOperationsFake{
+		connectionResponse: &pluginsdk.ResolveExecutorConnectionResponse{
+			Error: &pluginsdk.ExecutorProviderError{Code: "connection_unavailable", MessageId: "provider.connection.unavailable"},
+		},
+	}
+	runtime := NewPluginRemoteExecutor(operations, newTestLogger())
+	resolver := runtime.connectionResolver(&pluginsdk.ExecutorProviderRequestContext{}, &pluginsdk.ExecutorResourceDescriptor{}, pluginExecutorRuntimePort)
+
+	_, err := resolver(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "connection_unavailable") || !strings.Contains(err.Error(), "provider.connection.unavailable") {
+		t.Fatalf("provider rejection error = %v, want its stable code and message ID", err)
+	}
+}
+
+func TestPluginExecutorInstanceCreationRejectsUnusablePorts(t *testing.T) {
+	for _, port := range []int{0, 65536} {
+		t.Run(strconv.Itoa(port), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprintf(w, `{"id":"execution-plugin-1","port":%d}`, port)
+			}))
+			defer server.Close()
+			parsed, err := url.Parse(server.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			controlPort, err := strconv.Atoi(parsed.Port())
+			if err != nil {
+				t.Fatal(err)
+			}
+			control := agentctl.NewControlClient(parsed.Hostname(), controlPort, newTestLogger())
+			defer control.Close()
+
+			_, err = createPluginAgentctlInstance(context.Background(), control, &ExecutorCreateRequest{
+				InstanceID: "execution-plugin-1", SessionID: "session-plugin-1",
+			})
+			if err == nil || !strings.Contains(err.Error(), "without a usable port") {
+				t.Fatalf("createPluginAgentctlInstance() error = %v, want unusable port", err)
+			}
+		})
 	}
 }
 

@@ -570,11 +570,14 @@ func (r *PluginRemoteExecutor) connectionResolver(operationContext *pluginsdk.Ex
 		response, err := r.operations.ResolveExecutorConnection(ctx, &pluginsdk.ResolveExecutorConnectionRequest{
 			Context: requestContext, Resource: resource, Purpose: "agentctl", RuntimePort: runtimePort,
 		})
-		if err != nil || response == nil || response.GetLease() == nil {
+		if err != nil || response == nil {
 			return nil, errors.New("provider connection lease is unavailable")
 		}
 		if response.GetError() != nil {
 			return nil, fmt.Errorf("provider connection lease was rejected: %w", pluginExecutorProviderError(response.GetError()))
+		}
+		if response.GetLease() == nil {
+			return nil, errors.New("provider connection lease is unavailable")
 		}
 		lease := response.GetLease()
 		expiresAt, err := time.Parse(time.RFC3339Nano, lease.GetExpiresAt())
@@ -673,7 +676,7 @@ func (r *PluginRemoteExecutor) cleanupAfterPluginExecutorFailure(
 			zap.String("stage", stage),
 			zap.String("execution_id", req.InstanceID),
 			zap.String("session_id", req.SessionID),
-			zap.Error(cause))
+			zap.String("cause_type", fmt.Sprintf("%T", cause)))
 	}
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
