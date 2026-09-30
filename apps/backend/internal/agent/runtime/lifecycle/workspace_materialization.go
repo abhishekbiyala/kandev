@@ -49,16 +49,12 @@ func remoteWorkspaceProjectionFromLaunch(req *LaunchRequest, includePrimary bool
 		if spec.RepositoryURL == "" {
 			return nil, fmt.Errorf("remote repository %q has no clone URL", spec.RepoName)
 		}
-		branch := spec.CheckoutBranch
-		if branch == "" {
-			branch = spec.BaseBranch
-		}
-		name, branchSlug := worktree.SanitizeRepoDirName(spec.RepoName), worktree.SanitizeBranchSlug(branch)
-		if name == "" || branchSlug == "" {
+		destination, err := remoteWorkspaceRepositoryDestination(spec)
+		if err != nil {
 			return nil, fmt.Errorf("remote repository %q has unsafe runtime name", spec.RepoName)
 		}
 		projection = append(projection, WorkspaceRepositoryMaterialization{
-			RepositoryURL: spec.RepositoryURL, Destination: name + "-" + branchSlug,
+			RepositoryURL: spec.RepositoryURL, Destination: destination,
 			BaseBranch: spec.BaseBranch, CheckoutBranch: spec.CheckoutBranch,
 			PRNumber: spec.PRNumber, QualifiedPRBase: spec.QualifiedPRBase,
 			RemoteContribution: spec.RemoteContribution, CheckoutOptions: spec.CheckoutOptions,
@@ -66,6 +62,47 @@ func remoteWorkspaceProjectionFromLaunch(req *LaunchRequest, includePrimary bool
 		})
 	}
 	return projection, nil
+}
+
+func remoteWorkspaceRepositoryDirectory(spec RepoLaunchSpec) string {
+	branch := spec.CheckoutBranch
+	if branch == "" {
+		branch = spec.BaseBranch
+	}
+	name, branchSlug := worktree.SanitizeRepoDirName(spec.RepoName), worktree.SanitizeBranchSlug(branch)
+	if name == "" || branchSlug == "" {
+		return ""
+	}
+	return name + "-" + branchSlug
+}
+
+func remoteWorkspaceRepositoryDestination(spec RepoLaunchSpec) (string, error) {
+	if destination := remoteWorkspaceRepositoryDirectory(spec); destination != "" {
+		return destination, nil
+	}
+	return "", fmt.Errorf("repository %q has no safe branch-scoped workspace directory", spec.RepoName)
+}
+
+func usesRemoteWorkspaceMaterialization(req *LaunchRequest) bool {
+	return req != nil && models.IsRemoteExecutorType(models.ExecutorType(req.ExecutorType))
+}
+
+// launchRepositoryProjectionKey returns the workspace key used by agentctl
+// for a repository in this launch. Remote executors materialize secondary
+// repositories in branch-scoped directories. Plugin executors also materialize
+// the primary repository there, while other remote executors keep the primary
+// checkout at the workspace root.
+func launchRepositoryProjectionKey(req *LaunchRequest, spec RepoLaunchSpec, index int) (string, error) {
+	if usesRemoteWorkspaceMaterialization(req) {
+		if req.ExecutorType == string(models.ExecutorTypePluginRemote) || index > 0 {
+			return remoteWorkspaceRepositoryDestination(spec)
+		}
+		return "", nil
+	}
+	if index == 0 {
+		return "", nil
+	}
+	return baseBranchMetadataKey(spec), nil
 }
 
 type workspaceRepositoryClient interface {

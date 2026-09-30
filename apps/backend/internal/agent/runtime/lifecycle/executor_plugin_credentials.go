@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 
 	"github.com/kandev/kandev/internal/agent/agents"
@@ -21,7 +22,9 @@ import (
 )
 
 const (
-	agentctlFileTimeout = 30 * time.Second
+	agentctlFileTimeout            = 30 * time.Second
+	agentctlFileCleanupTimeout     = 5 * time.Second
+	agentctlFileTransferChunkBytes = 48 * 1024
 	// agentctlFileMissingExit is the exit code the read command uses for a missing file.
 	agentctlFileMissingExit = 3
 	// agentctlExitMarker precedes the exit status a command prints before idling.
@@ -100,11 +103,38 @@ func agentctlCommandResult(process *agentctl.ProcessInfo) ([]byte, int, bool) {
 }
 
 func (u agentctlFileUploader) WriteFile(ctx context.Context, path string, data []byte, mode os.FileMode) error {
+	tempPath := fmt.Sprintf("%s.kandev-upload-%s", path, uuid.NewString())
+	tempEnv := map[string]string{"KANDEV_FILE_TEMP": tempPath}
+	defer func() {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), agentctlFileCleanupTimeout)
+		defer cancel()
+		_, _ = u.run(cleanupCtx, `rm -f "$KANDEV_FILE_TEMP"`, tempEnv)
+	}()
+	initEnv := map[string]string{
+		"KANDEV_FILE_PATH": path,
+		"KANDEV_FILE_TEMP": tempPath,
+		"KANDEV_FILE_MODE": fmt.Sprintf("%o", mode.Perm()),
+	}
+	if _, err := u.run(ctx,
+		`umask 077 && mkdir -p "$(dirname "$KANDEV_FILE_PATH")" && (set -C; : > "$KANDEV_FILE_TEMP")`,
+		initEnv); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	for start := 0; start < len(data); start += agentctlFileTransferChunkBytes {
+		end := min(start+agentctlFileTransferChunkBytes, len(data))
+		_, err := u.run(ctx, `printf %s "$KANDEV_FILE_DATA" | base64 -d >> "$KANDEV_FILE_TEMP"`, map[string]string{
+			"KANDEV_FILE_TEMP": tempPath,
+			"KANDEV_FILE_DATA": base64.StdEncoding.EncodeToString(data[start:end]),
+		})
+		if err != nil {
+			return fmt.Errorf("write %s: %w", path, err)
+		}
+	}
 	_, err := u.run(ctx,
-		`umask 077 && mkdir -p "$(dirname "$KANDEV_FILE_PATH")" && printf %s "$KANDEV_FILE_DATA" | base64 -d > "$KANDEV_FILE_PATH" && chmod "$KANDEV_FILE_MODE" "$KANDEV_FILE_PATH"`,
+		`[ -f "$KANDEV_FILE_TEMP" ] && [ ! -d "$KANDEV_FILE_PATH" ] && chmod "$KANDEV_FILE_MODE" "$KANDEV_FILE_TEMP" && mv -f "$KANDEV_FILE_TEMP" "$KANDEV_FILE_PATH"`,
 		map[string]string{
 			"KANDEV_FILE_PATH": path,
-			"KANDEV_FILE_DATA": base64.StdEncoding.EncodeToString(data),
+			"KANDEV_FILE_TEMP": tempPath,
 			"KANDEV_FILE_MODE": fmt.Sprintf("%o", mode.Perm()),
 		})
 	if err != nil {
@@ -114,17 +144,51 @@ func (u agentctlFileUploader) WriteFile(ctx context.Context, path string, data [
 }
 
 func (u agentctlFileUploader) ReadFile(ctx context.Context, path string) ([]byte, error) {
-	output, err := u.run(ctx,
-		fmt.Sprintf(`[ -f "$KANDEV_FILE_PATH" ] || exit %d; base64 < "$KANDEV_FILE_PATH"`, agentctlFileMissingExit),
+	sizeOutput, err := u.run(ctx,
+		fmt.Sprintf(`[ -f "$KANDEV_FILE_PATH" ] || exit %d; wc -c < "$KANDEV_FILE_PATH"`, agentctlFileMissingExit),
 		map[string]string{"KANDEV_FILE_PATH": path})
-	var processErr *agentctlProcessError
-	if errors.As(err, &processErr) && processErr.exitCode != nil && *processErr.exitCode == agentctlFileMissingExit {
+	if agentctlFileIsMissing(err) {
 		return nil, fs.ErrNotExist
 	}
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
-	return base64.StdEncoding.DecodeString(strings.Join(strings.Fields(string(output)), ""))
+	size, err := strconv.ParseInt(strings.TrimSpace(string(sizeOutput)), 10, 64)
+	if err != nil || size < 0 {
+		return nil, fmt.Errorf("read %s: remote file size is invalid", path)
+	}
+	if size > int64(^uint(0)>>1) {
+		return nil, fmt.Errorf("read %s: remote file exceeds the local addressable size", path)
+	}
+	data := make([]byte, 0)
+	for offset := int64(0); offset < size; offset += agentctlFileTransferChunkBytes {
+		chunkIndex := offset / agentctlFileTransferChunkBytes
+		output, err := u.run(ctx,
+			fmt.Sprintf(`[ -f "$KANDEV_FILE_PATH" ] || exit %d; dd if="$KANDEV_FILE_PATH" bs=%d skip=%d count=1 2>/dev/null | base64 | tr -d '\n'`,
+				agentctlFileMissingExit, agentctlFileTransferChunkBytes, chunkIndex),
+			map[string]string{"KANDEV_FILE_PATH": path})
+		if agentctlFileIsMissing(err) {
+			return nil, fs.ErrNotExist
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read %s: %w", path, err)
+		}
+		chunk, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(output)))
+		if err != nil {
+			return nil, fmt.Errorf("read %s: decode remote file chunk: %w", path, err)
+		}
+		want := min(int64(agentctlFileTransferChunkBytes), size-offset)
+		if int64(len(chunk)) != want {
+			return nil, fmt.Errorf("read %s: remote file changed while it was being read", path)
+		}
+		data = append(data, chunk...)
+	}
+	return data, nil
+}
+
+func agentctlFileIsMissing(err error) bool {
+	var processErr *agentctlProcessError
+	return errors.As(err, &processErr) && processErr.exitCode != nil && *processErr.exitCode == agentctlFileMissingExit
 }
 
 func (u agentctlFileUploader) homeDir(ctx context.Context, req *ExecutorCreateRequest) (string, error) {

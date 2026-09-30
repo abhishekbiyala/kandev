@@ -26,6 +26,43 @@ type shellProcessClient struct {
 	processes map[string]*shellProcess
 }
 
+type observingAgentctlCommandClient struct {
+	agentctlCommandClient
+	maxEnvValueBytes int
+	maxOutputBytes   int
+}
+
+func (c *observingAgentctlCommandClient) StartProcess(ctx context.Context, req agentctl.StartProcessRequest) (*agentctl.ProcessInfo, error) {
+	for _, value := range req.Env {
+		c.maxEnvValueBytes = max(c.maxEnvValueBytes, len(value))
+	}
+	return c.agentctlCommandClient.StartProcess(ctx, req)
+}
+
+func (c *observingAgentctlCommandClient) GetProcess(ctx context.Context, id string, refresh bool) (*agentctl.ProcessInfo, error) {
+	process, err := c.agentctlCommandClient.GetProcess(ctx, id, refresh)
+	if err == nil {
+		for _, chunk := range process.Output {
+			c.maxOutputBytes = max(c.maxOutputBytes, len(chunk.Data))
+		}
+	}
+	return process, err
+}
+
+type failingAgentctlCommandClient struct {
+	agentctlCommandClient
+	startCalls int
+	failAt     int
+}
+
+func (c *failingAgentctlCommandClient) StartProcess(ctx context.Context, req agentctl.StartProcessRequest) (*agentctl.ProcessInfo, error) {
+	c.startCalls++
+	if c.startCalls == c.failAt {
+		return nil, errors.New("injected process start failure")
+	}
+	return c.agentctlCommandClient.StartProcess(ctx, req)
+}
+
 type shellProcess struct {
 	cmd    *exec.Cmd
 	output *lockedBuffer
@@ -126,6 +163,69 @@ func TestAgentctlFileUploaderRoundTrip(t *testing.T) {
 		if strings.Contains(command, "s3cr3t") || strings.Contains(command, path) {
 			t.Fatalf("command line carries file data or path: %s", command)
 		}
+	}
+}
+
+func TestAgentctlFileUploaderTransfersLargeFilesInBoundedChunks(t *testing.T) {
+	client := &shellProcessClient{}
+	t.Cleanup(func() { stopAll(client) })
+	observer := &observingAgentctlCommandClient{agentctlCommandClient: client}
+	uploader := agentctlFileUploader{client: observer, sessionID: "session-1"}
+	path := filepath.Join(t.TempDir(), "nested", "large-auth.json")
+	data := make([]byte, agentctlFileTransferChunkBytes*4+177)
+	for i := range data {
+		data[i] = byte((i * 31) % 251)
+	}
+
+	if err := uploader.WriteFile(context.Background(), path, data, 0o600); err != nil {
+		t.Fatalf("WriteFile large data: %v", err)
+	}
+	got, err := uploader.ReadFile(context.Background(), path)
+	if err != nil || !bytes.Equal(got, data) {
+		t.Fatalf("ReadFile large data: equal=%v err=%v", bytes.Equal(got, data), err)
+	}
+	if observer.maxEnvValueBytes > base64.StdEncoding.EncodedLen(agentctlFileTransferChunkBytes) {
+		t.Fatalf("largest environment value = %d bytes, want at most one encoded chunk", observer.maxEnvValueBytes)
+	}
+	if observer.maxOutputBytes > base64.StdEncoding.EncodedLen(agentctlFileTransferChunkBytes)+64 {
+		t.Fatalf("largest process output = %d bytes, want one encoded chunk plus its exit marker", observer.maxOutputBytes)
+	}
+}
+
+func TestAgentctlFileUploaderAppliesReadOnlyModeAfterTransfer(t *testing.T) {
+	client := &shellProcessClient{}
+	t.Cleanup(func() { stopAll(client) })
+	uploader := agentctlFileUploader{client: client, sessionID: "session-1"}
+	path := filepath.Join(t.TempDir(), "readonly.json")
+	data := bytes.Repeat([]byte("read-only"), agentctlFileTransferChunkBytes)
+	if err := uploader.WriteFile(context.Background(), path, data, 0o400); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.Mode().Perm() != 0o400 {
+		t.Fatalf("written file = %v, %v; want mode 0400", info, err)
+	}
+	got, err := uploader.ReadFile(context.Background(), path)
+	if err != nil || !bytes.Equal(got, data) {
+		t.Fatalf("ReadFile: equal=%v err=%v", bytes.Equal(got, data), err)
+	}
+}
+
+func TestAgentctlFileUploaderPreservesExistingFileWhenChunkTransferFails(t *testing.T) {
+	client := &shellProcessClient{}
+	t.Cleanup(func() { stopAll(client) })
+	failing := &failingAgentctlCommandClient{agentctlCommandClient: client, failAt: 2}
+	uploader := agentctlFileUploader{client: failing, sessionID: "session-1"}
+	path := filepath.Join(t.TempDir(), "auth.json")
+	if err := os.WriteFile(path, []byte("existing credentials"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := uploader.WriteFile(context.Background(), path, bytes.Repeat([]byte("new"), agentctlFileTransferChunkBytes), 0o600); err == nil {
+		t.Fatal("WriteFile succeeded after an injected chunk-transfer failure")
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || string(got) != "existing credentials" {
+		t.Fatalf("existing file = %q, %v; want original contents", got, err)
 	}
 }
 
