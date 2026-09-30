@@ -1,7 +1,7 @@
 ---
 id: "11-end-to-end-session-gaps"
 title: "Close the gaps that stop a plugin session end to end"
-status: done
+status: in_progress
 wave: 11
 depends_on:
   - "04-provision-bootstrap"

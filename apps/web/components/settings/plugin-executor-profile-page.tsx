@@ -296,7 +296,14 @@ export function PluginExecutorProfilePage({
         }
       />
       <ProfileEditorForm data={data} save={save} deletion={deletion} />
-      <PluginExecutorCredentialsCard credentials={data.credentials} />
+      <fieldset
+        disabled={
+          data.loading || Boolean(data.loadError) || Boolean(save.unavailableReason) || save.saving
+        }
+        className="min-w-0 disabled:opacity-60"
+      >
+        <PluginExecutorCredentialsCard credentials={data.credentials} />
+      </fieldset>
       <DeleteProfileDialog
         open={deletion.deleteOpen}
         onOpenChange={deletion.setDeleteOpen}

@@ -132,9 +132,12 @@ func (u agentctlFileUploader) homeDir(ctx context.Context, req *ExecutorCreateRe
 		return override, nil
 	}
 	output, err := u.run(ctx, `printf %s "$HOME"`, nil)
-	home := strings.TrimSpace(string(output))
-	if err != nil || home == "" {
+	if err != nil {
 		return "", fmt.Errorf("resolve remote home directory: %w", err)
+	}
+	home := strings.TrimSpace(string(output))
+	if home == "" {
+		return "", errors.New("resolve remote home directory: $HOME is empty")
 	}
 	return home, nil
 }

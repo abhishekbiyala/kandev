@@ -27,20 +27,24 @@ type executorProviderField struct {
 
 // kandevExecutorProfileKeys are executor profile keys owned by Kandev rather than
 // the provider: agent credential delivery and git identity, shared with the other
-// remote executors. The value marks keys that hold JSON. They are validated here
-// and never sent to the provider.
-var kandevExecutorProfileKeys = map[string]bool{
-	"remote_credentials":      true,
-	"remote_auth_secrets":     true,
-	"agent_config_bundles":    true,
-	"remote_auth_target_home": false,
-	"git_user_name":           false,
-	"git_user_email":          false,
+// remote executors. The value returns a target for the JSON shape a key holds,
+// or is nil for plain text. They are validated here and never sent to the provider.
+var kandevExecutorProfileKeys = map[string]func() any{
+	"remote_credentials":      func() any { return &[]string{} },
+	"remote_auth_secrets":     func() any { return &map[string]string{} },
+	"agent_config_bundles":    func() any { return &[]string{} },
+	"remote_auth_target_home": nil,
+	"git_user_name":           nil,
+	"git_user_email":          nil,
 }
 
 func validateKandevExecutorProfileValue(key, value string) error {
-	if kandevExecutorProfileKeys[key] && !json.Valid([]byte(value)) {
-		return fmt.Errorf("%w: %s is not valid JSON", ErrInvalidExecutorConfig, key)
+	shape := kandevExecutorProfileKeys[key]
+	if shape == nil {
+		return nil
+	}
+	if err := json.Unmarshal([]byte(value), shape()); err != nil {
+		return fmt.Errorf("%w: %s has an invalid value", ErrInvalidExecutorConfig, key)
 	}
 	return nil
 }

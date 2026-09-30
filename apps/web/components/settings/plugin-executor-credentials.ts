@@ -81,14 +81,19 @@ export function usePluginExecutorCredentials(profile: ExecutorProfile) {
   );
   const [agentEnvVars, setAgentEnvVars] = useState(() => parseRemoteAuthSecrets(profile.config));
 
-  const { reset: resetGit } = git;
-  const reset = useCallback(() => {
+  const resetSelections = useCallback(() => {
     setRemoteCredentials(parseRemoteCredentials(profile.config));
     setConfigBundleIds(parseAgentConfigBundles(profile.config));
     setAgentEnvVars(parseRemoteAuthSecrets(profile.config));
+  }, [profile.config]);
+  // Reload the draft only when the stored profile changes, so a late local Git
+  // identity response cannot overwrite unsaved selections.
+  useEffect(resetSelections, [resetSelections]);
+  const { reset: resetGit } = git;
+  const reset = useCallback(() => {
+    resetSelections();
     resetGit();
-  }, [profile.config, resetGit]);
-  useEffect(reset, [reset]);
+  }, [resetSelections, resetGit]);
 
   const form: PluginCredentialForm = {
     remoteCredentials,

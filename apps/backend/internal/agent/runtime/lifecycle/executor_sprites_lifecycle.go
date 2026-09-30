@@ -146,8 +146,9 @@ const (
 	StopReasonCascadeDelete    = "cascade delete"
 	StopReasonTaskTreeArchived = "task tree archived"
 	StopReasonTaskTreeDeleted  = "task tree deleted"
-	// StopReasonLaunchRollback discards an instance whose launch failed. Its
-	// runtime inventory is released afterwards, so the environment must go too.
+	// StopReasonLaunchRollback marks the stop of an instance whose launch failed
+	// and whose runtime inventory is released afterwards. Plugin executors destroy
+	// their environment for it.
 	StopReasonLaunchRollback = "launch rollback"
 )
 

@@ -27,9 +27,13 @@ func TestPluginExecutorProfilesAcceptKandevCredentialKeys(t *testing.T) {
 	if err := validatePluginExecutorProfileSchema(provider, config); err != nil {
 		t.Fatalf("validate: %v", err)
 	}
-	config["remote_credentials"] = "not json"
-	if err := validatePluginExecutorProfileSchema(provider, config); !errors.Is(err, ErrInvalidExecutorConfig) {
-		t.Fatalf("invalid JSON credential selection = %v, want ErrInvalidExecutorConfig", err)
+	for key, value := range map[string]string{
+		"remote_credentials": "not json", "agent_config_bundles": "123", "remote_auth_secrets": `["a"]`,
+	} {
+		invalid := map[string]string{"region": "us-west-2", key: value}
+		if err := validatePluginExecutorProfileSchema(provider, invalid); !errors.Is(err, ErrInvalidExecutorConfig) {
+			t.Fatalf("%s=%s: %v, want ErrInvalidExecutorConfig", key, value, err)
+		}
 	}
 }
 
