@@ -29,18 +29,22 @@ type WorkspaceRepositoryMaterialization struct {
 
 const workspaceMaterializationRollbackTimeout = 10 * time.Second
 
-func remoteWorkspaceProjectionFromLaunch(req *LaunchRequest) ([]WorkspaceRepositoryMaterialization, error) {
+// remoteWorkspaceProjectionFromLaunch returns the repositories agentctl must
+// materialize. Executors with a prepare script establish the first repository at
+// the workspace root themselves; includePrimary asks for it too, for executors
+// that have none.
+func remoteWorkspaceProjectionFromLaunch(req *LaunchRequest, includePrimary bool) ([]WorkspaceRepositoryMaterialization, error) {
 	if req == nil {
 		return nil, fmt.Errorf("launch request is required")
 	}
 	specs := req.RepoSpecs()
 	projection := make([]WorkspaceRepositoryMaterialization, 0, len(specs))
-	// The first durable repository is established at the workspace root by
-	// each remote executor's prepare path. Only sibling repositories belong in
-	// agentctl-managed workspace subdirectories.
 	for index, spec := range specs {
-		if index == 0 {
+		if index == 0 && !includePrimary {
 			continue
+		}
+		if index == 0 && spec.RepositoryURL == "" && len(req.Repositories) == 0 {
+			spec.RepositoryURL = getMetadataString(req.Metadata, "repository_clone_url")
 		}
 		if spec.RepositoryURL == "" {
 			return nil, fmt.Errorf("remote repository %q has no clone URL", spec.RepoName)

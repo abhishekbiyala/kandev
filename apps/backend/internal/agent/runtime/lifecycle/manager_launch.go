@@ -1984,8 +1984,15 @@ func (m *Manager) launchInternal(ctx context.Context, req *LaunchRequest) (*Agen
 	// A reset/relaunch receives the complete durable repository projection from
 	// the orchestrator. Reconcile it through the fresh live agentctl rather than
 	// relying on the legacy primary-repository prepare script alone.
-	if rt.RequiresCloneURL() && len(reqWithWorktree.RepoSpecs()) > 1 && execInstance != nil && execInstance.Client != nil {
-		projection, projectionErr := remoteWorkspaceProjectionFromLaunch(&reqWithWorktree)
+	// Plugin environments have no prepare script, so the primary repository is
+	// materialized the same way.
+	pluginRemote := reqWithWorktree.ExecutorType == string(models.ExecutorTypePluginRemote)
+	minimumRepos := 2
+	if pluginRemote {
+		minimumRepos = 1
+	}
+	if rt.RequiresCloneURL() && len(reqWithWorktree.RepoSpecs()) >= minimumRepos && execInstance != nil && execInstance.Client != nil {
+		projection, projectionErr := remoteWorkspaceProjectionFromLaunch(&reqWithWorktree, pluginRemote)
 		if projectionErr == nil {
 			projectionErr = materializeWorkspaceRepositories(ctx, execInstance.Client, projection)
 		}
