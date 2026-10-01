@@ -21,6 +21,7 @@ func TestPluginRemoteWorkspaceRefreshUsesMaterializedRepositoryPath(t *testing.T
 	if err := repo.CreateTaskEnvironment(ctx, &models.TaskEnvironment{
 		ID: "env-plugin", TaskID: taskResult.Task.ID, ExecutorType: string(models.ExecutorTypePluginRemote),
 		Status: models.TaskEnvironmentStatusReady,
+		Repos:  []*models.TaskEnvironmentRepo{{ID: "env-plugin-repo", RepositoryID: "repo-comparison"}},
 	}); err != nil {
 		t.Fatalf("CreateTaskEnvironment: %v", err)
 	}

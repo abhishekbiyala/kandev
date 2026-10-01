@@ -78,7 +78,7 @@ func TestPluginExecutorStopMatrix(t *testing.T) {
 		t.Fatalf("archive cleanup: %v", err)
 	}
 	if operations.destroyRequest == nil || operations.destroyRequest.GetResource().GetResourceHandle() != "resource-recovery" ||
-		operations.destroyRequest.GetCleanupClaim() != "operation-plugin-recovery:cleanup" || operations.destroyRequest.GetCleanupReason() != "task_cleanup" {
+		operations.destroyRequest.GetCleanupClaim() != "operation-plugin-recovery:cleanup" || operations.destroyRequest.GetCleanupReason() != pluginExecutorCleanupReasonTask {
 		t.Fatalf("destroy request = %#v", operations.destroyRequest)
 	}
 	if store.claimRequest.OwnerTaskID != "task-plugin-recovery" || store.claimRequest.OwnershipGeneration != 7 ||

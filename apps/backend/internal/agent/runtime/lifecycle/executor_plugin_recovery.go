@@ -426,9 +426,9 @@ func (r *PluginRemoteExecutor) cleanupPluginExecutorInstance(ctx context.Context
 	if profile.Provider.Identity != inventory.ProviderIdentity || profile.Provider.InstallationID != inventory.InstallationID {
 		return errors.New("recorded plugin executor provider is unavailable")
 	}
-	reason := "task_cleanup"
+	reason := pluginExecutorCleanupReasonTask
 	if instance.StopReason == StopReasonLaunchRollback {
-		reason = "launch_failed"
+		reason = pluginExecutorCleanupReasonLaunch
 	}
 	return r.destroyPluginExecutorRecord(ctx, record, inventory, inventory.Resource, reason)
 }

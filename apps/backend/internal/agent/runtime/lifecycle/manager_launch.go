@@ -602,10 +602,13 @@ func collectBaseBranches(req *LaunchRequest) map[string]string {
 			} else {
 				key = ""
 			}
+			if key == "" && (req.ExecutorType == string(models.ExecutorTypePluginRemote) || index > 0) {
+				continue
+			}
+		} else if key == "" {
+			continue
 		}
-		if key != "" {
-			out[key] = spec.BaseBranch
-		}
+		out[key] = spec.BaseBranch
 	}
 	if req.BaseBranch != "" && req.ExecutorType != string(models.ExecutorTypePluginRemote) {
 		if _, ok := out[""]; !ok {

@@ -876,7 +876,7 @@ func TestRegisteredPluginLaunchRollbackDestroysBeforeReleasingInventory(t *testi
 				InstanceID: "execution-plugin-recovery", TaskID: "task-plugin-recovery", SessionID: "session-plugin-recovery",
 				Metadata: store.record.Metadata,
 				ReleaseRuntimeInventory: func(context.Context) error {
-					if operations.destroyRequest == nil || operations.destroyRequest.GetCleanupReason() != "launch_failed" {
+					if operations.destroyRequest == nil || operations.destroyRequest.GetCleanupReason() != pluginExecutorCleanupReasonLaunch {
 						return errors.New("plugin environment was not destroyed before inventory release")
 					}
 					released = true
@@ -900,7 +900,7 @@ func TestRegisteredPluginLaunchRollbackDestroysBeforeReleasingInventory(t *testi
 			if err != nil {
 				t.Fatalf("stopRegisteredLaunchRuntime: %v", err)
 			}
-			if !released || operations.destroyRequest.GetCleanupReason() != "launch_failed" {
+			if !released || operations.destroyRequest.GetCleanupReason() != pluginExecutorCleanupReasonLaunch {
 				t.Fatalf("cleanup/release order is wrong: destroy=%#v released=%v", operations.destroyRequest, released)
 			}
 		})
